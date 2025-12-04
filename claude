@@ -44,18 +44,28 @@ USAGE:
   claude --harness          Force harness mode
   claude --raw [args]       Bypass harness, run Claude directly
   claude --rollback         Restore last snapshot
+  claude --metrics          Show session metrics
+  claude --context          Load saved project context
 
 FLAGS:
   --raw         Bypass all harness logic
   --harness     Force harness mode
   --rollback    Restore previous snapshot
+  --metrics     Show session metrics and violation history
+  --context     Load saved project context
   -h, --help    Show this help
 
 ENFORCEMENT:
   - No slop (greeting phrases, filler)
   - No placeholders (TODO, FIXME, pass, stub)
+  - Security checks (OWASP top 10)
   - Session tracking (initializer/continuing modes)
   - Git snapshots before changes
+
+QUALITY HINTS (non-blocking):
+  - Code complexity warnings
+  - Test coverage reminders
+  - Performance anti-patterns
 EOF
 }
 
@@ -85,6 +95,14 @@ parse_arguments() {
                 do_rollback
                 exit 0
                 ;;
+            --metrics)
+                show_metrics
+                exit 0
+                ;;
+            --context)
+                load_context
+                exit 0
+                ;;
             --help|-h)
                 show_help
                 exit 0
@@ -107,12 +125,15 @@ SESSION_ID="$(date +%s)-$$"
 SESSION_DIR="/tmp/claude-$SESSION_ID"
 SNAPSHOT_DIR="$HOME/.claude/snapshots"
 VIOLATIONS_LOG="$HOME/.claude/violations.log"
+METRICS_FILE="$HOME/.claude/metrics.json"
+CONTEXT_CACHE="$HOME/.claude/context_cache"
 
 PROGRESS_FILE="$WORK_DIR/claude-progress.txt"
 FEATURES_FILE="$WORK_DIR/features.json"
 
 OUTPUT_FILE="$SESSION_DIR/output.txt"
 VIOLATIONS_FILE="$SESSION_DIR/violations.txt"
+COMPLEXITY_FILE="$SESSION_DIR/complexity.txt"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -121,7 +142,7 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
 
-mkdir -p "$SESSION_DIR" "$SNAPSHOT_DIR"
+mkdir -p "$SESSION_DIR" "$SNAPSHOT_DIR" "$CONTEXT_CACHE"
 trap 'rm -rf "$SESSION_DIR"' EXIT
 
 # ============================================================================
@@ -177,6 +198,260 @@ do_rollback() {
     fi
 
     echo -e "${GREEN}✅ Rollback complete${NC}"
+}
+
+# ============================================================================
+# METRICS TRACKING
+# ============================================================================
+
+init_metrics() {
+    if [ ! -f "$METRICS_FILE" ]; then
+        cat > "$METRICS_FILE" << 'EOF'
+{
+    "total_sessions": 0,
+    "total_violations": 0,
+    "violations_by_type": {},
+    "success_rate": 0,
+    "avg_retries": 0,
+    "last_session": null,
+    "projects": {}
+}
+EOF
+    fi
+}
+
+update_metrics() {
+    local violation_count="$1"
+    local retry_count="$2"
+    local success="$3"
+    local project_name
+    project_name=$(basename "$WORK_DIR")
+
+    init_metrics
+
+    if command -v jq >/dev/null 2>&1; then
+        local tmp_file="/tmp/metrics_update_$$.json"
+        jq --arg proj "$project_name" \
+           --arg date "$(date -Iseconds)" \
+           --argjson violations "$violation_count" \
+           --argjson retries "$retry_count" \
+           --argjson success "$success" \
+           '.total_sessions += 1 |
+            .total_violations += $violations |
+            .last_session = $date |
+            .projects[$proj] = (.projects[$proj] // {sessions: 0, violations: 0}) |
+            .projects[$proj].sessions += 1 |
+            .projects[$proj].violations += $violations |
+            .projects[$proj].last_used = $date' \
+           "$METRICS_FILE" > "$tmp_file" && mv "$tmp_file" "$METRICS_FILE"
+    fi
+}
+
+show_metrics() {
+    init_metrics
+    if command -v jq >/dev/null 2>&1 && [ -f "$METRICS_FILE" ]; then
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${CYAN}📊 Harness Metrics${NC}"
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        local sessions violations
+        sessions=$(jq '.total_sessions' "$METRICS_FILE")
+        violations=$(jq '.total_violations' "$METRICS_FILE")
+        echo -e "Total Sessions: ${GREEN}$sessions${NC}"
+        echo -e "Total Violations: ${YELLOW}$violations${NC}"
+        if [ "$sessions" -gt 0 ]; then
+            local avg
+            avg=$(echo "scale=2; $violations / $sessions" | bc 2>/dev/null || echo "N/A")
+            echo -e "Avg Violations/Session: ${CYAN}$avg${NC}"
+        fi
+        echo ""
+        echo -e "${CYAN}Projects:${NC}"
+        jq -r '.projects | to_entries[] | "  \(.key): \(.value.sessions) sessions, \(.value.violations) violations"' "$METRICS_FILE" 2>/dev/null || true
+    else
+        echo -e "${YELLOW}No metrics data available (jq required)${NC}"
+    fi
+}
+
+# ============================================================================
+# CODE COMPLEXITY ANALYSIS
+# ============================================================================
+
+check_complexity() {
+    local output="$1"
+    local warnings=0
+
+    # Check for deeply nested code (4+ levels)
+    if grep -qE "^(\s{16,}|\t{4,})" <<< "$output"; then
+        echo "⚠️ COMPLEXITY: Deep nesting detected (4+ levels) - consider refactoring" >> "$COMPLEXITY_FILE"
+        ((warnings++))
+    fi
+
+    # Check for very long functions (50+ lines of code in a single block)
+    local consecutive_code=0
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*[^#/\*[:space:]] ]]; then
+            ((consecutive_code++))
+            if [ "$consecutive_code" -gt 50 ]; then
+                echo "⚠️ COMPLEXITY: Long function detected (50+ lines) - consider splitting" >> "$COMPLEXITY_FILE"
+                ((warnings++))
+                break
+            fi
+        else
+            consecutive_code=0
+        fi
+    done <<< "$output"
+
+    # Check for many parameters (6+)
+    if grep -qE "def \w+\([^)]{100,}\)|function \w+\([^)]{100,}\)" <<< "$output"; then
+        echo "⚠️ COMPLEXITY: Function with many parameters - consider using object/struct" >> "$COMPLEXITY_FILE"
+        ((warnings++))
+    fi
+
+    [ "$warnings" -gt 0 ] && return 1 || return 0
+}
+
+# ============================================================================
+# TEST COVERAGE HINTS
+# ============================================================================
+
+check_test_coverage() {
+    local output="$1"
+    local hints=0
+
+    # Check if code has corresponding tests
+    if grep -qE "(def |function |class |fn )" <<< "$output"; then
+        if ! grep -qiE "(test_|_test|\.test\.|spec\.|describe\(|it\(|#\[test\]|@Test)" <<< "$output"; then
+            echo "💡 COVERAGE: New code detected but no tests included" >> "$COMPLEXITY_FILE"
+            ((hints++))
+        fi
+    fi
+
+    # Check for error handling without tests
+    if grep -qE "(try|catch|except|raise|throw|Error|Exception)" <<< "$output"; then
+        if ! grep -qiE "(test.*error|test.*exception|should.*throw|expect.*error)" <<< "$output"; then
+            echo "💡 COVERAGE: Error handling added - consider adding error case tests" >> "$COMPLEXITY_FILE"
+            ((hints++))
+        fi
+    fi
+
+    # Check for edge cases
+    if grep -qE "(if.*==.*0|if.*null|if.*None|if.*empty|\.length.*==.*0)" <<< "$output"; then
+        echo "💡 COVERAGE: Edge case handling detected - ensure tests cover these" >> "$COMPLEXITY_FILE"
+        ((hints++))
+    fi
+
+    [ "$hints" -gt 0 ] && return 1 || return 0
+}
+
+# ============================================================================
+# PERFORMANCE HINTS
+# ============================================================================
+
+check_performance() {
+    local output="$1"
+    local hints=0
+
+    # N+1 query pattern
+    if grep -qE "for.*in.*:.*\.query\(|\.forEach.*fetch|\.map.*await" <<< "$output"; then
+        echo "⚡ PERF: Potential N+1 query pattern - consider batch fetching" >> "$COMPLEXITY_FILE"
+        ((hints++))
+    fi
+
+    # Synchronous file I/O in async context
+    if grep -qE "async.*readFileSync|async.*writeFileSync" <<< "$output"; then
+        echo "⚡ PERF: Sync file I/O in async context - use async versions" >> "$COMPLEXITY_FILE"
+        ((hints++))
+    fi
+
+    # Large array operations without streaming
+    if grep -qE "\.readFile.*JSON\.parse|read.*entire.*file" <<< "$output"; then
+        echo "⚡ PERF: Reading entire file into memory - consider streaming for large files" >> "$COMPLEXITY_FILE"
+        ((hints++))
+    fi
+
+    # Regex in loops
+    if grep -qE "for.*re\.|while.*regex|\.forEach.*match\(" <<< "$output"; then
+        echo "⚡ PERF: Regex in loop - consider compiling regex outside loop" >> "$COMPLEXITY_FILE"
+        ((hints++))
+    fi
+
+    # String concatenation in loops
+    if grep -qE "for.*\+=.*\"|while.*\+=.*'" <<< "$output"; then
+        echo "⚡ PERF: String concatenation in loop - consider using join/builder" >> "$COMPLEXITY_FILE"
+        ((hints++))
+    fi
+
+    [ "$hints" -gt 0 ] && return 1 || return 0
+}
+
+# ============================================================================
+# CONTEXT MANAGEMENT
+# ============================================================================
+
+save_context() {
+    local project_name
+    project_name=$(basename "$WORK_DIR")
+    local context_file="$CONTEXT_CACHE/${project_name}_context.txt"
+
+    # Save current context summary
+    {
+        echo "=== Context saved: $(date) ==="
+        echo "Project: $project_name"
+        echo "Working Dir: $WORK_DIR"
+
+        if [ -f "$PROGRESS_FILE" ]; then
+            echo ""
+            echo "=== Last Progress ==="
+            tail -30 "$PROGRESS_FILE"
+        fi
+
+        if [ -f "$FEATURES_FILE" ] && command -v jq >/dev/null 2>&1; then
+            echo ""
+            echo "=== Features Status ==="
+            jq -r '.features[] | "\(.id): \(if .passes then "✅" else "⏳" end) \(.description)"' "$FEATURES_FILE" 2>/dev/null || true
+        fi
+
+        if git rev-parse --git-dir >/dev/null 2>&1; then
+            echo ""
+            echo "=== Recent Commits ==="
+            git log --oneline -5 2>/dev/null || true
+        fi
+    } > "$context_file"
+}
+
+load_context() {
+    local project_name
+    project_name=$(basename "$WORK_DIR")
+    local context_file="$CONTEXT_CACHE/${project_name}_context.txt"
+
+    if [ -f "$context_file" ]; then
+        echo -e "${CYAN}📚 Loading previous context...${NC}"
+        cat "$context_file"
+        echo ""
+    else
+        echo -e "${YELLOW}No saved context for this project${NC}"
+    fi
+}
+
+# ============================================================================
+# OUTPUT PREFILL ENFORCEMENT
+# ============================================================================
+
+build_prefill_instruction() {
+    cat << 'EOF'
+RESPONSE FORMAT - You MUST start your response with ONE of these exact prefixes:
+- "```" (if providing code)
+- "Modified " (if editing a file)
+- "Created " (if creating a file)
+- "Fixed " (if fixing a bug)
+- "Added " (if adding a feature)
+- "Removed " (if removing code)
+- "Updated " (if updating existing code)
+- "Tested " (if running tests)
+- "Error: " (if encountering an error)
+
+DO NOT start with greetings, explanations, or meta-commentary.
+Start DIRECTLY with the action.
+EOF
 }
 
 # ============================================================================
@@ -830,8 +1105,22 @@ run_harness() {
         enforce_harness_compliance "$OUTPUT" "$session_mode" || true
         check_security "$OUTPUT" || true
 
+        # Quality hints (non-blocking)
+        > "$COMPLEXITY_FILE"
+        check_complexity "$OUTPUT" || true
+        check_test_coverage "$OUTPUT" || true
+        check_performance "$OUTPUT" || true
+
         if [ ! -s "$VIOLATIONS_FILE" ]; then
             echo -e "${GREEN}✅ All checks passed${NC}"
+
+            # Show quality hints if any
+            if [ -s "$COMPLEXITY_FILE" ]; then
+                echo ""
+                echo -e "${YELLOW}📋 Quality Hints (non-blocking):${NC}"
+                cat "$COMPLEXITY_FILE"
+            fi
+
             success=1
             break
         fi
@@ -960,3 +1249,12 @@ else
 fi
 
 echo -e "${CYAN}Snapshot: $SNAPSHOT_ID (use --rollback to restore)${NC}"
+
+# Update metrics
+VIOLATION_COUNT=$(wc -l < "$VIOLATIONS_FILE" 2>/dev/null || echo 0)
+update_metrics "$VIOLATION_COUNT" "$DISPLAY_SESSION" "$([ -s "$VIOLATIONS_FILE" ] && echo 0 || echo 1)"
+
+# Save context for next session
+save_context
+
+echo -e "${CYAN}Use 'claude --metrics' to view session history${NC}"
