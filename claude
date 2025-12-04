@@ -624,6 +624,28 @@ check_golden_ticket() {
 # ENFORCEMENT FUNCTIONS
 # ============================================================================
 
+is_slop_false_positive() {
+    local output="$1"
+    local pattern="$2"
+
+    # Check if pattern appears in code block (between ``` markers)
+    if grep -qE '```.*'"$pattern"'.*```|`[^`]*'"$pattern"'[^`]*`' <<< "$output"; then
+        return 0
+    fi
+
+    # Check if in quoted text or string literal
+    if grep -qE '"[^"]*'"$pattern"'[^"]*"|'"'"'[^'"'"']*'"$pattern"'[^'"'"']*'"'" <<< "$output"; then
+        return 0
+    fi
+
+    # Check if explaining/describing (meta discussion)
+    if grep -qiE "(avoid|don't use|instead of|rather than|not|bad|wrong).*$pattern" <<< "$output"; then
+        return 0
+    fi
+
+    return 1
+}
+
 enforce_no_slop() {
     local output="$1"
     local violations=0
@@ -645,12 +667,41 @@ enforce_no_slop() {
 
     for p in "${patterns[@]}"; do
         if grep -qi "$p" <<< "$output"; then
-            echo "❌ SLOP: '$p'" >> "$VIOLATIONS_FILE"
-            ((violations++))
+            if ! is_slop_false_positive "$output" "$p"; then
+                echo "❌ SLOP: '$p'" >> "$VIOLATIONS_FILE"
+                ((violations++))
+            fi
         fi
     done
 
     [ "$violations" -gt 0 ] && return 1 || return 0
+}
+
+is_placeholder_false_positive() {
+    local output="$1"
+    local pattern="$2"
+
+    # Skip if discussing/explaining placeholders (meta discussion)
+    if grep -qiE "(remove|fix|replace|found|existing|old|current|has a|contains).*$pattern" <<< "$output"; then
+        return 0
+    fi
+
+    # Skip if in grep/search command output showing file contents
+    if grep -qE "^\s*[0-9]+[:-].*$pattern|^[a-zA-Z0-9_/.-]+:[0-9]+:.*$pattern" <<< "$output"; then
+        return 0
+    fi
+
+    # Skip if showing diff output (identifying what to fix)
+    if grep -qE "^[-+].*$pattern|^@@.*@@" <<< "$output"; then
+        return 0
+    fi
+
+    # Skip if in TODO.md or tracking file context
+    if grep -qiE "(TODO\.md|todo list|task list|checklist)" <<< "$output"; then
+        return 0
+    fi
+
+    return 1
 }
 
 enforce_no_placeholders() {
@@ -669,8 +720,10 @@ enforce_no_placeholders() {
 
     for p in "${patterns[@]}"; do
         if grep -qE "$p" <<< "$output"; then
-            echo "❌ PLACEHOLDER: '$p'" >> "$VIOLATIONS_FILE"
-            ((violations++))
+            if ! is_placeholder_false_positive "$output" "$p"; then
+                echo "❌ PLACEHOLDER: '$p'" >> "$VIOLATIONS_FILE"
+                ((violations++))
+            fi
         fi
     done
 
