@@ -213,15 +213,51 @@ is_false_positive() {
                 return 0
             fi
             ;;
+        "LFI")
+            # Safe if path validation/sanitization present
+            if grep -qE "(os\.path\.basename|realpath|abspath|path\.resolve|sanitize.?path|validate.?path|whitelist|allowed.?paths)" <<< "$output"; then
+                return 0
+            fi
+            # Relative paths in safe contexts (imports, requires)
+            if grep -qE "(from \.\.|import \.\.|require\('\.\./)" <<< "$output"; then
+                return 0
+            fi
+            ;;
+        "SECRETS")
+            # Safe if using environment variables or secret managers
+            if grep -qE "(os\.environ|process\.env|getenv|secret.?manager|vault|\.env|config\[|settings\.|from_env)" <<< "$output"; then
+                return 0
+            fi
+            # Example/placeholder secrets
+            if grep -qE "(example|placeholder|your.?key.?here|xxx|changeme|TODO)" <<< "$output"; then
+                return 0
+            fi
+            ;;
         "SSRF")
             # localhost in dev/test context is often fine
             if grep -qE "(development|testing|test server|local dev|127\.0\.0\.1.*test)" <<< "$output"; then
                 return 0
             fi
+            # URL validation present
+            if grep -qE "(validate.?url|whitelist|allowed.?hosts|url.?validator)" <<< "$output"; then
+                return 0
+            fi
+            ;;
+        "DESER")
+            # Safe if using safe loaders
+            if grep -qE "(safe_load|SafeLoader|json\.loads|JSON\.parse[^(]*\(|trusted.?data)" <<< "$output"; then
+                return 0
+            fi
+            ;;
+        "XXE")
+            # Safe if external entities disabled
+            if grep -qE "(defusedxml|resolve_entities\s*=\s*False|FEATURE_SECURE|disable.?external|no.?entity)" <<< "$output"; then
+                return 0
+            fi
             ;;
         "CRYPTO")
             # MD5/SHA1 for non-security purposes (checksums, cache keys)
-            if grep -qE "(checksum|cache.?key|file.?hash|etag|content.?hash|fingerprint)" <<< "$output"; then
+            if grep -qE "(checksum|cache.?key|file.?hash|etag|content.?hash|fingerprint|non.?crypto)" <<< "$output"; then
                 return 0
             fi
             ;;
