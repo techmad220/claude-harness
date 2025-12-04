@@ -183,6 +183,53 @@ do_rollback() {
 # SECURITY CHECKS
 # ============================================================================
 
+# False positive contexts - these patterns indicate safe/educational usage
+is_false_positive() {
+    local output="$1"
+    local category="$2"
+
+    # Check for documentation/comment context
+    if grep -qE "(#.*example|//.*example|/\*.*example|\*.*example|>>>|docstring|documentation|tutorial|README|\.md:|test_|_test\.py|spec\.js|\.spec\.ts)" <<< "$output"; then
+        return 0
+    fi
+
+    # Check for safe alternatives being shown
+    case "$category" in
+        "SQLi")
+            # Safe if using parameterized queries nearby
+            if grep -qE "(parameterized|prepared statement|\?.*%s.*execute|cursor\.execute.*,\s*\(|\.query\(.*,\s*\[)" <<< "$output"; then
+                return 0
+            fi
+            ;;
+        "XSS")
+            # Safe if using sanitization
+            if grep -qE "(sanitize|escape|encode|DOMPurify|textContent|createTextNode)" <<< "$output"; then
+                return 0
+            fi
+            ;;
+        "CMDi")
+            # Safe if using safe alternatives
+            if grep -qE "(shlex\.quote|subprocess\.run\(\[|shell=False|execFile)" <<< "$output"; then
+                return 0
+            fi
+            ;;
+        "SSRF")
+            # localhost in dev/test context is often fine
+            if grep -qE "(development|testing|test server|local dev|127\.0\.0\.1.*test)" <<< "$output"; then
+                return 0
+            fi
+            ;;
+        "CRYPTO")
+            # MD5/SHA1 for non-security purposes (checksums, cache keys)
+            if grep -qE "(checksum|cache.?key|file.?hash|etag|content.?hash|fingerprint)" <<< "$output"; then
+                return 0
+            fi
+            ;;
+    esac
+
+    return 1
+}
+
 check_security() {
     local output="$1"
     local violations=0
@@ -204,8 +251,10 @@ check_security() {
 
     for pattern in "${sql_patterns[@]}"; do
         if grep -qE "$pattern" <<< "$output"; then
-            echo "⚠️ SECURITY [SQLi]: Potential SQL injection - use parameterized queries" >> "$VIOLATIONS_FILE"
-            ((violations++))
+            if ! is_false_positive "$output" "SQLi"; then
+                echo "⚠️ SECURITY [SQLi]: Potential SQL injection - use parameterized queries" >> "$VIOLATIONS_FILE"
+                ((violations++))
+            fi
             break
         fi
     done
@@ -227,8 +276,10 @@ check_security() {
 
     for pattern in "${xss_patterns[@]}"; do
         if grep -qE "$pattern" <<< "$output"; then
-            echo "⚠️ SECURITY [XSS]: Potential XSS vulnerability - sanitize output" >> "$VIOLATIONS_FILE"
-            ((violations++))
+            if ! is_false_positive "$output" "XSS"; then
+                echo "⚠️ SECURITY [XSS]: Potential XSS vulnerability - sanitize output" >> "$VIOLATIONS_FILE"
+                ((violations++))
+            fi
             break
         fi
     done
@@ -252,8 +303,10 @@ check_security() {
 
     for pattern in "${cmd_patterns[@]}"; do
         if grep -qE "$pattern" <<< "$output"; then
-            echo "⚠️ SECURITY [CMDi]: Potential command injection - avoid shell=True, sanitize input" >> "$VIOLATIONS_FILE"
-            ((violations++))
+            if ! is_false_positive "$output" "CMDi"; then
+                echo "⚠️ SECURITY [CMDi]: Potential command injection - avoid shell=True, sanitize input" >> "$VIOLATIONS_FILE"
+                ((violations++))
+            fi
             break
         fi
     done
@@ -276,8 +329,10 @@ check_security() {
 
     for pattern in "${path_patterns[@]}"; do
         if grep -qE "$pattern" <<< "$output"; then
-            echo "⚠️ SECURITY [LFI/RFI]: Potential path traversal - validate and sanitize paths" >> "$VIOLATIONS_FILE"
-            ((violations++))
+            if ! is_false_positive "$output" "LFI"; then
+                echo "⚠️ SECURITY [LFI/RFI]: Potential path traversal - validate and sanitize paths" >> "$VIOLATIONS_FILE"
+                ((violations++))
+            fi
             break
         fi
     done
@@ -299,8 +354,10 @@ check_security() {
 
     for pattern in "${secret_patterns[@]}"; do
         if grep -qE "$pattern" <<< "$output"; then
-            echo "⚠️ SECURITY [SECRETS]: Hardcoded secret detected - use environment variables" >> "$VIOLATIONS_FILE"
-            ((violations++))
+            if ! is_false_positive "$output" "SECRETS"; then
+                echo "⚠️ SECURITY [SECRETS]: Hardcoded secret detected - use environment variables" >> "$VIOLATIONS_FILE"
+                ((violations++))
+            fi
             break
         fi
     done
@@ -323,8 +380,10 @@ check_security() {
 
     for pattern in "${ssrf_patterns[@]}"; do
         if grep -qE "$pattern" <<< "$output"; then
-            echo "⚠️ SECURITY [SSRF]: Potential SSRF - validate and whitelist URLs" >> "$VIOLATIONS_FILE"
-            ((violations++))
+            if ! is_false_positive "$output" "SSRF"; then
+                echo "⚠️ SECURITY [SSRF]: Potential SSRF - validate and whitelist URLs" >> "$VIOLATIONS_FILE"
+                ((violations++))
+            fi
             break
         fi
     done
@@ -343,8 +402,10 @@ check_security() {
 
     for pattern in "${deser_patterns[@]}"; do
         if grep -qE "$pattern" <<< "$output"; then
-            echo "⚠️ SECURITY [DESER]: Insecure deserialization - use safe loaders" >> "$VIOLATIONS_FILE"
-            ((violations++))
+            if ! is_false_positive "$output" "DESER"; then
+                echo "⚠️ SECURITY [DESER]: Insecure deserialization - use safe loaders" >> "$VIOLATIONS_FILE"
+                ((violations++))
+            fi
             break
         fi
     done
@@ -363,8 +424,10 @@ check_security() {
 
     for pattern in "${xxe_patterns[@]}"; do
         if grep -qE "$pattern" <<< "$output"; then
-            echo "⚠️ SECURITY [XXE]: Potential XXE - disable external entities" >> "$VIOLATIONS_FILE"
-            ((violations++))
+            if ! is_false_positive "$output" "XXE"; then
+                echo "⚠️ SECURITY [XXE]: Potential XXE - disable external entities" >> "$VIOLATIONS_FILE"
+                ((violations++))
+            fi
             break
         fi
     done
@@ -386,6 +449,7 @@ check_security() {
 
     for pattern in "${danger_patterns[@]}"; do
         if grep -qE "$pattern" <<< "$output"; then
+            # Dangerous commands don't get false positive bypass - always flag
             echo "⚠️ SECURITY [DANGER]: Dangerous command detected: $pattern" >> "$VIOLATIONS_FILE"
             ((violations++))
             break
@@ -406,8 +470,10 @@ check_security() {
 
     for pattern in "${crypto_patterns[@]}"; do
         if grep -qiE "$pattern" <<< "$output"; then
-            echo "⚠️ SECURITY [CRYPTO]: Weak cryptography - use strong algorithms" >> "$VIOLATIONS_FILE"
-            ((violations++))
+            if ! is_false_positive "$output" "CRYPTO"; then
+                echo "⚠️ SECURITY [CRYPTO]: Weak cryptography - use strong algorithms" >> "$VIOLATIONS_FILE"
+                ((violations++))
+            fi
             break
         fi
     done
