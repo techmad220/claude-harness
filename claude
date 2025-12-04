@@ -187,36 +187,228 @@ check_security() {
     local output="$1"
     local violations=0
 
-    # Check for hardcoded secrets
-    local secret_patterns=(
-        "password\s*=\s*['\"][^'\"]+['\"]"
-        "api_key\s*=\s*['\"][^'\"]+['\"]"
-        "secret\s*=\s*['\"][^'\"]+['\"]"
-        "token\s*=\s*['\"][^'\"]+['\"]"
-        "AWS_SECRET"
-        "PRIVATE_KEY"
+    # === SQL Injection ===
+    local sql_patterns=(
+        "SELECT.*FROM.*WHERE.*=.*\\\$"           # Unparameterized queries
+        "INSERT INTO.*VALUES.*\\\$"              # Direct variable insertion
+        "UPDATE.*SET.*=.*\\\$"                   # Direct variable in UPDATE
+        "DELETE FROM.*WHERE.*\\\$"               # Direct variable in DELETE
+        '"\s*\+\s*.*\s*\+\s*".*SELECT'          # String concat with SELECT
+        "'\s*\+\s*.*\s*\+\s*'.*SELECT"          # String concat with SELECT
+        'f".*SELECT.*{.*}"'                      # Python f-string SQL
+        'f".*INSERT.*{.*}"'                      # Python f-string SQL
+        '`.*SELECT.*\\\$\{.*\}`'                 # JS template literal SQL
+        "execute\s*\(\s*[\"'].*%s"              # Python % formatting in SQL
+        "query\s*\(\s*[\"'].*\\\$"              # Direct variable in query
     )
 
-    for pattern in "${secret_patterns[@]}"; do
-        if grep -qiE "$pattern" <<< "$output"; then
-            echo "⚠️ SECURITY: Possible hardcoded secret detected" >> "$VIOLATIONS_FILE"
+    for pattern in "${sql_patterns[@]}"; do
+        if grep -qE "$pattern" <<< "$output"; then
+            echo "⚠️ SECURITY [SQLi]: Potential SQL injection - use parameterized queries" >> "$VIOLATIONS_FILE"
             ((violations++))
+            break
         fi
     done
 
-    # Check for dangerous commands
+    # === XSS (Cross-Site Scripting) ===
+    local xss_patterns=(
+        "innerHTML\s*=\s*"                       # Direct innerHTML assignment
+        "outerHTML\s*=\s*"                       # Direct outerHTML assignment
+        "document\.write\s*\("                   # document.write
+        "\.html\s*\(\s*[^)]*\\\$"               # jQuery .html() with variable
+        "dangerouslySetInnerHTML"                # React dangerous prop
+        "v-html\s*="                             # Vue v-html directive
+        "\[innerHTML\]\s*="                      # Angular innerHTML binding
+        "<%=.*%>"                                # Unescaped ERB
+        "\{\{.*\|.*safe.*\}\}"                   # Django/Jinja safe filter
+        "Markup\s*\("                            # Flask Markup
+        "render_template_string"                 # Flask template injection
+    )
+
+    for pattern in "${xss_patterns[@]}"; do
+        if grep -qE "$pattern" <<< "$output"; then
+            echo "⚠️ SECURITY [XSS]: Potential XSS vulnerability - sanitize output" >> "$VIOLATIONS_FILE"
+            ((violations++))
+            break
+        fi
+    done
+
+    # === Command Injection ===
+    local cmd_patterns=(
+        "os\.system\s*\("                        # Python os.system
+        "subprocess\.call\s*\(.*shell\s*=\s*True" # Python subprocess with shell
+        "subprocess\.run\s*\(.*shell\s*=\s*True"  # Python subprocess with shell
+        "exec\s*\(\s*\\\$"                       # PHP/bash exec with variable
+        "shell_exec\s*\("                        # PHP shell_exec
+        "passthru\s*\("                          # PHP passthru
+        "system\s*\(\s*\\\$"                     # system() with variable
+        "popen\s*\(\s*\\\$"                      # popen with variable
+        "eval\s*\(\s*\\\$"                       # eval with variable
+        '`\s*\\\$'                               # Backtick with variable
+        "\|\s*bash"                              # Pipe to bash
+        "child_process\.exec\s*\("               # Node child_process.exec
+        "spawn\s*\(.*\{.*shell.*\}"              # Node spawn with shell
+    )
+
+    for pattern in "${cmd_patterns[@]}"; do
+        if grep -qE "$pattern" <<< "$output"; then
+            echo "⚠️ SECURITY [CMDi]: Potential command injection - avoid shell=True, sanitize input" >> "$VIOLATIONS_FILE"
+            ((violations++))
+            break
+        fi
+    done
+
+    # === Path Traversal / LFI / RFI ===
+    local path_patterns=(
+        "open\s*\(\s*\\\$"                       # open() with variable
+        "file_get_contents\s*\(\s*\\\$"          # PHP file_get_contents
+        "include\s*\(\s*\\\$"                    # PHP include with variable
+        "require\s*\(\s*\\\$"                    # PHP require with variable
+        "readFile\s*\(\s*\\\$"                   # Node readFile with variable
+        "\.\./"                                  # Path traversal sequence
+        "\.\.%2[fF]"                             # URL encoded traversal
+        "php://input"                            # PHP input wrapper
+        "php://filter"                           # PHP filter wrapper
+        "file://"                                # File protocol
+        "expect://"                              # Expect wrapper
+        "data://"                                # Data protocol in file context
+    )
+
+    for pattern in "${path_patterns[@]}"; do
+        if grep -qE "$pattern" <<< "$output"; then
+            echo "⚠️ SECURITY [LFI/RFI]: Potential path traversal - validate and sanitize paths" >> "$VIOLATIONS_FILE"
+            ((violations++))
+            break
+        fi
+    done
+
+    # === Hardcoded Secrets ===
+    local secret_patterns=(
+        "password\s*=\s*['\"][^'\"]{4,}['\"]"    # Hardcoded password
+        "api_key\s*=\s*['\"][^'\"]{8,}['\"]"     # Hardcoded API key
+        "secret\s*=\s*['\"][^'\"]{8,}['\"]"      # Hardcoded secret
+        "token\s*=\s*['\"][^'\"]{8,}['\"]"       # Hardcoded token
+        "AWS_SECRET_ACCESS_KEY"                  # AWS secret
+        "PRIVATE_KEY.*BEGIN"                     # Private key
+        "sk-[a-zA-Z0-9]{20,}"                    # OpenAI API key pattern
+        "ghp_[a-zA-Z0-9]{36}"                    # GitHub token pattern
+        "xox[baprs]-[a-zA-Z0-9]+"                # Slack token pattern
+        "-----BEGIN RSA PRIVATE KEY-----"        # RSA private key
+        "-----BEGIN OPENSSH PRIVATE KEY-----"    # OpenSSH private key
+    )
+
+    for pattern in "${secret_patterns[@]}"; do
+        if grep -qE "$pattern" <<< "$output"; then
+            echo "⚠️ SECURITY [SECRETS]: Hardcoded secret detected - use environment variables" >> "$VIOLATIONS_FILE"
+            ((violations++))
+            break
+        fi
+    done
+
+    # === SSRF (Server-Side Request Forgery) ===
+    local ssrf_patterns=(
+        "requests\.get\s*\(\s*\\\$"              # Python requests with variable URL
+        "urllib\.request\.urlopen\s*\(\s*\\\$"  # Python urllib with variable
+        "curl_exec\s*\("                         # PHP curl
+        "file_get_contents\s*\(\s*[\"']http"    # PHP remote file
+        "fetch\s*\(\s*\\\$"                      # JS fetch with variable
+        "axios\.\w+\s*\(\s*\\\$"                 # Axios with variable URL
+        "http\.get\s*\(\s*\\\$"                  # Node http with variable
+        "localhost"                              # Localhost access
+        "127\.0\.0\.1"                           # Localhost IP
+        "0\.0\.0\.0"                             # Any interface
+        "169\.254\."                             # AWS metadata
+        "metadata\.google"                       # GCP metadata
+    )
+
+    for pattern in "${ssrf_patterns[@]}"; do
+        if grep -qE "$pattern" <<< "$output"; then
+            echo "⚠️ SECURITY [SSRF]: Potential SSRF - validate and whitelist URLs" >> "$VIOLATIONS_FILE"
+            ((violations++))
+            break
+        fi
+    done
+
+    # === Insecure Deserialization ===
+    local deser_patterns=(
+        "pickle\.loads\s*\("                     # Python pickle
+        "yaml\.load\s*\([^)]*Loader\s*="         # PyYAML unsafe load
+        "yaml\.unsafe_load"                      # PyYAML unsafe
+        "unserialize\s*\("                       # PHP unserialize
+        "Marshal\.load"                          # Ruby Marshal
+        "ObjectInputStream"                      # Java deserialization
+        "readObject\s*\("                        # Java readObject
+        "JSON\.parse.*eval"                      # JS JSON with eval
+    )
+
+    for pattern in "${deser_patterns[@]}"; do
+        if grep -qE "$pattern" <<< "$output"; then
+            echo "⚠️ SECURITY [DESER]: Insecure deserialization - use safe loaders" >> "$VIOLATIONS_FILE"
+            ((violations++))
+            break
+        fi
+    done
+
+    # === XXE (XML External Entity) ===
+    local xxe_patterns=(
+        "<!ENTITY"                               # XML entity declaration
+        "SYSTEM\s*[\"']file:"                    # External file entity
+        "SYSTEM\s*[\"']http:"                    # External HTTP entity
+        "etree\.parse\s*\("                      # Python lxml parse
+        "XMLParser\s*\("                         # Python XMLParser
+        "parseXML\s*\("                          # Generic XML parsing
+        "DocumentBuilder"                        # Java XML parsing
+        "SAXParser"                              # Java SAX
+    )
+
+    for pattern in "${xxe_patterns[@]}"; do
+        if grep -qE "$pattern" <<< "$output"; then
+            echo "⚠️ SECURITY [XXE]: Potential XXE - disable external entities" >> "$VIOLATIONS_FILE"
+            ((violations++))
+            break
+        fi
+    done
+
+    # === Dangerous Commands ===
     local danger_patterns=(
-        "rm -rf /"
-        "chmod 777"
-        "eval\s*\("
-        "> /dev/sd"
-        "mkfs\."
+        "rm -rf /"                               # Recursive root delete
+        "rm -rf /\*"                             # Root wildcard delete
+        "chmod 777"                              # World-writable permissions
+        "chmod -R 777"                           # Recursive world-writable
+        "> /dev/sd"                              # Write to disk device
+        "mkfs\."                                 # Format filesystem
+        "dd if=.*/dev/"                          # Raw disk operations
+        ":(){.*:.*};:"                           # Fork bomb
+        "wget.*\|\s*bash"                        # Download and execute
+        "curl.*\|\s*bash"                        # Download and execute
+        "curl.*\|\s*sh"                          # Download and execute
     )
 
     for pattern in "${danger_patterns[@]}"; do
         if grep -qE "$pattern" <<< "$output"; then
-            echo "⚠️ SECURITY: Dangerous command detected: $pattern" >> "$VIOLATIONS_FILE"
+            echo "⚠️ SECURITY [DANGER]: Dangerous command detected: $pattern" >> "$VIOLATIONS_FILE"
             ((violations++))
+            break
+        fi
+    done
+
+    # === Weak Cryptography ===
+    local crypto_patterns=(
+        "md5\s*\("                               # MD5 hashing
+        "sha1\s*\("                              # SHA1 hashing
+        "DES\s*\("                               # DES encryption
+        "ECB"                                    # ECB mode
+        "random\.random\s*\("                    # Insecure random (Python)
+        "Math\.random\s*\("                      # Insecure random (JS)
+        "rand\s*\(\s*\)"                         # Insecure random (PHP/C)
+        "password.*plaintext"                    # Plaintext password storage
+    )
+
+    for pattern in "${crypto_patterns[@]}"; do
+        if grep -qiE "$pattern" <<< "$output"; then
+            echo "⚠️ SECURITY [CRYPTO]: Weak cryptography - use strong algorithms" >> "$VIOLATIONS_FILE"
+            ((violations++))
+            break
         fi
     done
 
