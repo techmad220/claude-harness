@@ -1,22 +1,20 @@
 # Claude Harness
 
-Quality enforcement harness for Claude CLI that implements Anthropic's long-running agent pattern with code quality gates.
+Quality enforcement harness for Claude CLI that implements code quality gates, session tracking, and safety features.
 
 ## Features
 
 - **Anti-slop enforcement** - Blocks greeting phrases like "I'd be happy to", "Let me", etc.
 - **No-placeholder enforcement** - Blocks TODO, FIXME, pass, stub, unimplemented code
-- **Harness compliance** - Validates session protocol (progress file, git history, features.json)
-- **Anthropic session pattern** - Initializer vs continuing mode detection
-- **Golden ticket bypass** - Skip enforcement for explain/help/emergency requests
-- **Retry logic** - Automatic retries with prompt softening
-- **Snapshot system** - Git-based rollback capability
-- **CLAUDE.md auto-creation** - Generates project rules file
+- **Security checks** - Detects hardcoded secrets and dangerous commands
+- **Snapshot & Rollback** - Automatic git snapshots before changes with easy rollback
+- **Session tracking** - Anthropic's long-running agent pattern (initializer/continuing modes)
+- **Golden ticket bypass** - Skip enforcement for explain/help requests
 
 ## Installation
 
 ```bash
-# Backup original claude
+# Backup original claude binary
 mv ~/.local/bin/claude ~/.local/bin/claude.real
 
 # Install harness
@@ -33,43 +31,57 @@ claude
 # Full harness mode with enforcement
 claude "implement authentication"
 
-# Bypass harness, run Claude directly  
+# Bypass harness, run Claude directly
 claude --raw [args]
 
-# Force harness mode
-claude --harness
+# Rollback to previous snapshot if something goes wrong
+claude --rollback
 ```
+
+## Safety Features
+
+### Snapshots
+Before any changes, the harness automatically saves:
+- Current git commit
+- Uncommitted changes (diff)
+- File hashes
+
+If something goes wrong, run `claude --rollback` to restore.
+
+### Security Checks
+The harness scans output for:
+- Hardcoded passwords, API keys, tokens, secrets
+- Dangerous commands (rm -rf /, chmod 777, eval, etc.)
 
 ## Session Modes
 
-**Initializer Mode** (no claude-progress.txt exists):
+**Initializer Mode** (new project):
 - Creates claude-progress.txt, features.json, init.sh
 - Lists all features needed
-- Implements ONE feature
+- Implements ONE feature per session
 
-**Continuing Mode** (claude-progress.txt exists):
+**Continuing Mode** (existing project):
 - Reads progress file and git history
 - Picks ONE feature from features.json
 - Updates progress when done
 
 ## Enforcement Rules
 
-The harness enforces these quality gates:
-
-1. No slop patterns (greeting phrases, filler)
-2. No placeholders (TODO, FIXME, pass, stub)
-3. Tests required with every change
-4. Patch/edit mode for existing files
-5. One feature at a time
+| Check | What it catches |
+|-------|-----------------|
+| No slop | Greeting phrases, filler words |
+| No placeholders | TODO, FIXME, pass, stub |
+| Harness compliance | Session protocol violations |
+| Security | Hardcoded secrets, dangerous commands |
 
 ## Golden Tickets
 
-These patterns bypass enforcement:
+These patterns skip enforcement (for help/info requests):
 - `explain ...`
 - `what is ...`
 - `how does ...`
-- `EMERGENCY:` / `HOTFIX:`
-- `status` / `help`
+- `help`
+- `status`
 
 ## License
 
