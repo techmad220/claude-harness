@@ -32,6 +32,7 @@ fi
 HARNESS_MODE=""
 RAW_MODE=""
 INTERACTIVE_MODE=""
+AUTO_MODE=""
 TASK_ARGS=""
 
 show_help() {
@@ -41,6 +42,7 @@ Claude Harness - Quality Enforcement
 USAGE:
   claude                    Interactive mode (creates CLAUDE.md if needed)
   claude "task description" Full harness mode with enforcement
+  claude "task" --auto      Auto-continue until all features complete
   claude --harness          Force harness mode
   claude --raw [args]       Bypass harness, run Claude directly
   claude --rollback         Restore last snapshot
@@ -50,6 +52,7 @@ USAGE:
 FLAGS:
   --raw         Bypass all harness logic
   --harness     Force harness mode
+  --auto        Auto-continue sessions until project complete
   --rollback    Restore previous snapshot
   --metrics     Show session metrics and violation history
   --context     Load saved project context
@@ -75,8 +78,14 @@ parse_arguments() {
         return
     fi
 
+    # Parse flags - handle --auto anywhere in args
+    local args_without_auto=()
     while [ $# -gt 0 ]; do
         case "$1" in
+            --auto)
+                AUTO_MODE="true"
+                shift
+                ;;
             --raw)
                 RAW_MODE="true"
                 shift
@@ -86,10 +95,6 @@ parse_arguments() {
             --harness)
                 HARNESS_MODE="true"
                 shift
-                if [ $# -gt 0 ]; then
-                    TASK_ARGS="$*"
-                fi
-                return
                 ;;
             --rollback)
                 do_rollback
@@ -108,12 +113,17 @@ parse_arguments() {
                 exit 0
                 ;;
             *)
-                HARNESS_MODE="true"
-                TASK_ARGS="$*"
-                return
+                args_without_auto+=("$1")
+                shift
                 ;;
         esac
     done
+
+    # Reconstruct task args without --auto
+    if [ ${#args_without_auto[@]} -gt 0 ]; then
+        HARNESS_MODE="true"
+        TASK_ARGS="${args_without_auto[*]}"
+    fi
 }
 
 # ============================================================================
@@ -1258,3 +1268,98 @@ update_metrics "$VIOLATION_COUNT" "$DISPLAY_SESSION" "$([ -s "$VIOLATIONS_FILE" 
 save_context
 
 echo -e "${CYAN}Use 'claude --metrics' to view session history${NC}"
+
+# ============================================================================
+# AUTO-CONTINUE MODE
+# ============================================================================
+
+check_project_complete() {
+    # Check if all features are done
+    if [ -f "$FEATURES_FILE" ] && command -v jq >/dev/null 2>&1; then
+        local pending
+        pending=$(jq '[.features[] | select(.passes == false)] | length' "$FEATURES_FILE" 2>/dev/null || echo "1")
+        if [ "$pending" -eq 0 ]; then
+            return 0  # Complete
+        fi
+    fi
+    return 1  # Not complete
+}
+
+if [ "$AUTO_MODE" = "true" ]; then
+    echo ""
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${MAGENTA}🔄 AUTO MODE - Checking if more work needed...${NC}"
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+
+    AUTO_SESSION_COUNT=1
+
+    while ! check_project_complete; do
+        ((AUTO_SESSION_COUNT++))
+
+        # Check how many features remain
+        if [ -f "$FEATURES_FILE" ] && command -v jq >/dev/null 2>&1; then
+            REMAINING=$(jq '[.features[] | select(.passes == false)] | length' "$FEATURES_FILE" 2>/dev/null || echo "?")
+            echo ""
+            echo -e "${CYAN}📋 $REMAINING features remaining - starting session $AUTO_SESSION_COUNT...${NC}"
+        else
+            echo ""
+            echo -e "${CYAN}🔄 Continuing to next session ($AUTO_SESSION_COUNT)...${NC}"
+        fi
+
+        sleep 2  # Brief pause between sessions
+
+        # Re-detect session mode (should be "continuing" now)
+        SESSION_MODE="$(detect_session_mode)"
+        SESSION_NUM="$(get_session_number)"
+        DISPLAY_SESSION=$((SESSION_NUM + 1))
+
+        # Take new snapshot
+        SNAPSHOT_ID="$(take_snapshot)"
+        echo -e "${GREEN}📸 Snapshot: $SNAPSHOT_ID${NC}"
+
+        # Build continuing prompt
+        ENFORCED_PROMPT="$(build_continuing_prompt "$TASK_ARGS" "$SESSION_NUM")"
+
+        # Append enforcement rules
+        ENFORCED_PROMPT="$ENFORCED_PROMPT
+
+ENFORCEMENT:
+- NO SLOP: No greetings or preambles
+- NO PLACEHOLDERS: No TODO, pass, stub
+- TESTS REQUIRED: Include tests
+- SECURITY: No hardcoded secrets
+
+Start DIRECTLY with action/code."
+
+        # Add CLAUDE.md rules if present
+        if [ -f "CLAUDE.md" ]; then
+            CLAUDE_RULES="$(head -50 CLAUDE.md 2>/dev/null || echo "")"
+            ENFORCED_PROMPT="$ENFORCED_PROMPT
+
+Project rules:
+$CLAUDE_RULES"
+        fi
+
+        echo ""
+        echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║${NC}  ${MAGENTA}🔄 AUTO SESSION #${AUTO_SESSION_COUNT}${NC}                                    ${CYAN}║${NC}"
+        echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+
+        # Run harness
+        run_harness "$ENFORCED_PROMPT" "$SESSION_MODE"
+
+        # Update metrics
+        VIOLATION_COUNT=$(wc -l < "$VIOLATIONS_FILE" 2>/dev/null || echo 0)
+        update_metrics "$VIOLATION_COUNT" "$DISPLAY_SESSION" "$([ -s "$VIOLATIONS_FILE" ] && echo 0 || echo 1)"
+
+        # Save context
+        save_context
+    done
+
+    echo ""
+    echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}🎉 PROJECT COMPLETE! All features implemented.${NC}"
+    echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}Total auto sessions: $AUTO_SESSION_COUNT${NC}"
+fi

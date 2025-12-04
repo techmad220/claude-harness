@@ -6,10 +6,13 @@ Quality enforcement harness for Claude CLI that implements code quality gates, s
 
 - **Anti-slop enforcement** - Blocks greeting phrases like "I'd be happy to", "Let me", etc.
 - **No-placeholder enforcement** - Blocks TODO, FIXME, pass, stub, unimplemented code
-- **Security checks** - Detects hardcoded secrets and dangerous commands
+- **Security checks** - OWASP top 10 vulnerability detection
 - **Snapshot & Rollback** - Automatic git snapshots before changes with easy rollback
 - **Session tracking** - Anthropic's long-running agent pattern (initializer/continuing modes)
-- **Golden ticket bypass** - Skip enforcement for explain/help requests
+- **Auto mode** - Automatically continue sessions until project complete
+- **Metrics tracking** - Track violations and sessions over time
+- **Context management** - Save/load project context between sessions
+- **Quality hints** - Non-blocking warnings for complexity, test coverage, performance
 
 ## Installation
 
@@ -31,27 +34,48 @@ claude
 # Full harness mode with enforcement
 claude "implement authentication"
 
+# Auto-continue until all features complete
+claude "build a REST API" --auto
+
 # Bypass harness, run Claude directly
 claude --raw [args]
 
-# Rollback to previous snapshot if something goes wrong
+# Rollback to previous snapshot
 claude --rollback
+
+# Show session metrics
+claude --metrics
+
+# Load saved project context
+claude --context
 ```
 
-## Safety Features
+## Flags
 
-### Snapshots
-Before any changes, the harness automatically saves:
-- Current git commit
-- Uncommitted changes (diff)
-- File hashes
+| Flag | Description |
+|------|-------------|
+| `--raw` | Bypass all harness logic |
+| `--harness` | Force harness mode |
+| `--auto` | Auto-continue sessions until project complete |
+| `--rollback` | Restore previous snapshot |
+| `--metrics` | Show session metrics and violation history |
+| `--context` | Load saved project context |
+| `-h, --help` | Show help |
 
-If something goes wrong, run `claude --rollback` to restore.
+## Enforcement Rules
 
-### Security Checks
-The harness scans output for:
-- Hardcoded passwords, API keys, tokens, secrets
-- Dangerous commands (rm -rf /, chmod 777, eval, etc.)
+| Check | What it catches |
+|-------|-----------------|
+| No slop | Greeting phrases, filler words |
+| No placeholders | TODO, FIXME, pass, stub |
+| Security | SQL injection, XSS, command injection, hardcoded secrets, etc. |
+| Harness compliance | Session protocol violations |
+
+## Quality Hints (Non-blocking)
+
+- Code complexity warnings (deep nesting, long functions)
+- Test coverage reminders
+- Performance anti-pattern detection
 
 ## Session Modes
 
@@ -65,23 +89,35 @@ The harness scans output for:
 - Picks ONE feature from features.json
 - Updates progress when done
 
-## Enforcement Rules
+## Auto Mode
 
-| Check | What it catches |
-|-------|-----------------|
-| No slop | Greeting phrases, filler words |
-| No placeholders | TODO, FIXME, pass, stub |
-| Harness compliance | Session protocol violations |
-| Security | Hardcoded secrets, dangerous commands |
+Use `--auto` to automatically continue sessions until all features are complete:
 
-## Golden Tickets
+```bash
+claude "build a user management system" --auto
+```
 
-These patterns skip enforcement (for help/info requests):
-- `explain ...`
-- `what is ...`
-- `how does ...`
-- `help`
-- `status`
+The harness will:
+1. Run initializer session to create features.json
+2. Check if all features have `"passes": true`
+3. If not complete, automatically start next session
+4. Repeat until all features done
+5. Show celebration message when complete
+
+## Security Checks
+
+- SQL Injection
+- XSS (Cross-Site Scripting)
+- Command Injection
+- Path Traversal / LFI / RFI
+- Hardcoded Secrets
+- SSRF (Server-Side Request Forgery)
+- Insecure Deserialization
+- XXE (XML External Entity)
+- Dangerous Commands
+- Weak Cryptography
+
+All security checks include false-positive detection to avoid flagging safe code patterns.
 
 ## License
 
