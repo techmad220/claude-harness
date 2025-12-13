@@ -1046,13 +1046,33 @@ You are starting a NEW PROJECT. This is the FIRST session.
 
 MANDATORY SEQUENCE:
 1. Create claude-progress.txt with project header
-2. Create features.json listing ALL features needed
+2. Create features.json with COMPREHENSIVE feature list:
+   - Target 200+ granular features for full coverage
+   - Each feature should be atomic and testable
+   - Include edge cases, error handling, UI states
+   - Example: "user can click new chat button and see empty chat"
+   - All features start with "passes": false
 3. Create init.sh for dev environment setup
 4. Implement exactly ONE feature
-5. Update progress file
-6. Commit your work
+5. VERIFY the feature works (see verification rules below)
+6. Update progress file
+7. Commit your work
+
+FEATURE LIST FORMAT (features.json):
+{
+  "features": [
+    {
+      "id": "feature-001",
+      "category": "functional|ui|error-handling|edge-case",
+      "description": "Specific testable behavior",
+      "verification": "How to verify this works",
+      "passes": false
+    }
+  ]
+}
 
 RULES:
+- Create 200+ features for comprehensive coverage
 - Work on ONLY ONE feature this session
 - Include tests for the feature
 - No placeholders (TODO, pass, stub)
@@ -1070,15 +1090,30 @@ build_continuing_prompt() {
 You are CONTINUING an existing project. Session #${display_num}.
 
 STARTUP SEQUENCE:
-1. Read claude-progress.txt - show last entries
-2. Check git log -5
-3. Read features.json - pick ONE with "passes": false
-4. State which feature you will work on
+1. Run: cat claude-progress.txt (show last 3 entries)
+2. Run: git log --oneline -5 (show recent commits)
+3. Run: ./init.sh (verify environment starts)
+4. Run: cat features.json (pick ONE with "passes": false)
+5. State which feature you will work on
 
-RULES:
+WORK RULES:
 - Work on EXACTLY ONE feature
-- Include tests
-- Update progress when done
+- Include comprehensive tests
+
+VERIFICATION RULES (MANDATORY before marking "passes": true):
+- For web apps: Use Puppeteer MCP to test as a real user would
+  - Navigate to the page
+  - Perform the user action
+  - Verify the expected result visually
+  - Take a screenshot as evidence
+- For CLI/API: Run actual commands and verify output
+- For libraries: Write and run integration tests
+- NEVER mark a feature as passing without E2E verification
+- If Puppeteer MCP unavailable, use curl/browser dev tools
+
+COMPLETION RULES:
+- Update claude-progress.txt when done
+- Mark feature "passes": true ONLY after verification succeeds
 - Commit with descriptive message
 - No placeholders
 
@@ -1225,6 +1260,14 @@ ENFORCEMENT:
 - NO PLACEHOLDERS: No TODO, pass, stub
 - TESTS REQUIRED: Include tests
 - SECURITY: No hardcoded secrets
+
+HYBRID TOOLS (prefer bash tools for efficiency):
+- Browser automation: cat ~/.claude/agent-tools/browser-tools/README.md (~225 tokens)
+- Tool recommendation: python3 ~/.claude/middleware/hybrid_tools.py recommend 'task'
+- Search all tools: python3 ~/.claude/middleware/hybrid_tools.py search 'query'
+- Find skills: python3 ~/.claude/middleware/mcp_middleware.py find-skills 'query'
+- Full guide: cat ~/.claude/agent-tools/TOOLS.md
+- Save working code as skill when substantial and reusable
 
 Start DIRECTLY with action/code."
 

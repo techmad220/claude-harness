@@ -77,6 +77,39 @@ claude --context
 - Test coverage reminders
 - Performance anti-pattern detection
 
+## E2E Verification (Anthropic-style)
+
+The harness now implements Anthropic's recommended verification pattern:
+
+- **200+ feature granularity** - Initializer creates comprehensive feature list
+- **Puppeteer MCP integration** - For web apps, test as a real user would
+- **Verify before marking passing** - Features must pass E2E verification
+- **No premature completion** - Can't mark features done without evidence
+
+### Feature List Format
+
+```json
+{
+  "features": [
+    {
+      "id": "feature-001",
+      "category": "functional|ui|error-handling|edge-case",
+      "description": "Specific testable behavior",
+      "verification": "How to verify this works",
+      "passes": false
+    }
+  ]
+}
+```
+
+### Verification Methods
+
+| Project Type | Verification Method |
+|--------------|---------------------|
+| Web apps | Puppeteer MCP - navigate, interact, screenshot |
+| CLI/API | Run commands, verify output |
+| Libraries | Integration tests |
+
 ## Session Modes
 
 **Initializer Mode** (new project):
